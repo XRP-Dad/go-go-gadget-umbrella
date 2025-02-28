@@ -1,5 +1,5 @@
 {
-    "default_community": "Point4Read!",
+    "default_community": "public",
     "original_ping_weight": 0.4,
     "original_snmp_weight": 0.3,
     "original_ssh_weight": 0.2,
