@@ -76,6 +76,7 @@ type CheckRequest struct {
 type ProxyResult struct {
 	ProxyAddr     string            `json:"proxy_addr"`
 	ProxyHostname string            `json:"proxy_hostname"`
+	BestProxy     string            `json:"best_proxy"`
 	Ping          *PingResult       `json:"ping,omitempty"`
 	SNMPSuccess   bool              `json:"snmp_success"`
 	SNMPResults   map[string]string `json:"snmp_results,omitempty"`
@@ -744,6 +745,12 @@ func handleProxyCheck(w http.ResponseWriter, r *http.Request, constants *Constan
 	result := ProxyResult{SNMPSuccess: false}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+
+	// Get hostname for best_proxy
+	hostname, err := os.Hostname()
+	if err == nil {
+		result.BestProxy = hostname
+	}
 
 	// Run checks in parallel
 	for _, check := range checks {
@@ -1467,6 +1474,7 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		req.Community = r.URL.Query().Get("community")
+		req.SNMPVersion = r.URL.Query().Get("snmp_version")
 	}
 
 	if req.Target == "" {
@@ -1476,7 +1484,7 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Set default checks if none specified
 	if len(req.Checks) == 0 {
-		req.Checks = []string{"ping", "snmp", "ssh", "traceroute"}
+		req.Checks = []string{"ping", "snmp"}
 	}
 
 	// Validate and clean OIDs
@@ -1501,12 +1509,49 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 		req.Community = s.Constants.DefaultCommunity
 	}
 
-	// Run check
+	// Get current hostname for default best_proxy
+	currentHostname, _, _ := getSystemInfo()
+
+	// Initialize response with default values
+	response := SimpleCheckResponse{
+		BestProxy: currentHostname, // Default to current hostname
+	}
+
+	// Check if we can handle the request locally first
+	if contains(req.Checks, "snmp") {
+		snmpResults, version, err := checkSNMPWithRequestedVersion(req.Target, req.SNMPOIDs, req.Community, req.SNMPVersion)
+		if err == nil {
+			response.SNMPResults = snmpResults
+			log.Printf("Local SNMP check successful for %s using version %s", req.Target, version)
+
+			// If we got successful SNMP results locally, we can just return these
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				log.Printf("Failed to encode simple check response: %v", err)
+				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			}
+			return
+		}
+	}
+
+	// If we couldn't handle it locally or need other checks, try the proxies
 	resultsChan := make(chan ProxyResult, len(s.Proxies))
 	var wg sync.WaitGroup
-	for _, proxy := range s.Proxies {
+
+	// Make sure we have at least one proxy
+	if len(s.Proxies) == 0 {
+		// If no proxies defined, add the local server as a proxy
+		localProxy := ProxyConfig{
+			Address:  fmt.Sprintf("localhost:8081"),
+			Hostname: currentHostname,
+		}
 		wg.Add(1)
-		go s.runProxyCheck(proxy, req, &wg, resultsChan)
+		go s.runProxyCheck(localProxy, req, &wg, resultsChan)
+	} else {
+		for _, proxy := range s.Proxies {
+			wg.Add(1)
+			go s.runProxyCheck(proxy, req, &wg, resultsChan)
+		}
 	}
 
 	go func() {
@@ -1518,10 +1563,17 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 	var bestProxy string
 	var bestScore float64
 	var bestResult ProxyResult
+	var resultsReceived bool
 
 	for result := range resultsChan {
+		resultsReceived = true
+
+		// Skip results with errors
+		if result.Error != "" {
+			continue
+		}
+
 		// Apply server penalty if needed
-		currentHostname, _, _ := getSystemInfo()
 		if result.ProxyHostname == currentHostname {
 			result.Score = result.Score * 0.5
 		}
@@ -1533,25 +1585,29 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Prepare response
-	response := SimpleCheckResponse{
-		BestProxy: bestProxy,
-	}
+	// If we got valid results, update the response
+	if resultsReceived && bestProxy != "" {
+		response.BestProxy = bestProxy
 
-	if bestResult.Ping != nil && bestResult.Ping.Success {
-		response.PingLatency = bestResult.Ping.LatencyMs
-	}
+		if bestResult.Ping != nil && bestResult.Ping.Success {
+			response.PingLatency = bestResult.Ping.LatencyMs
+		}
 
-	if bestResult.SNMPSuccess && bestResult.SNMPResults != nil {
-		response.SNMPResults = bestResult.SNMPResults
-	}
+		if bestResult.SNMPSuccess && bestResult.SNMPResults != nil {
+			response.SNMPResults = bestResult.SNMPResults
+		}
 
-	if bestResult.SSH != "" {
-		response.SSH = bestResult.SSH
-	}
+		if bestResult.SSH != "" {
+			response.SSH = bestResult.SSH
+		}
 
-	if bestResult.Traceroute != nil && bestResult.Traceroute.Success {
-		response.Traceroute = bestResult.Traceroute
+		if bestResult.Traceroute != nil && bestResult.Traceroute.Success {
+			response.Traceroute = bestResult.Traceroute
+		}
+	} else {
+		// Ensure we always have a best_proxy value, even if no proxy returned valid results
+		log.Printf("No proxy returned valid results for %s, using current host as best_proxy", req.Target)
+		// We already initialized response.BestProxy = currentHostname earlier, so it's set
 	}
 
 	w.Header().Set("Content-Type", "application/json")

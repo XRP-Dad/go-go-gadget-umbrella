@@ -84,6 +84,57 @@ Example `constants.json`:
 
 ## 📡 Usage Examples
 
+### Simple Checks (Now Working!)
+
+Simple checks provide a streamlined way to perform basic device monitoring. These checks are now fully functional and reliable.
+
+1. **Basic Simple Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping", "snmp"],
+       "community": "public"
+     }'
+   ```
+
+2. **SNMP-Only Simple Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v1"
+     }'
+   ```
+
+3. **Ping-Only Simple Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping"]
+     }'
+   ```
+
+### Simple Check Response
+
+A successful simple check will always include the `best_proxy` field, which indicates which proxy performed the check:
+
+```json
+{
+  "best_proxy": "proxy1",
+  "ping_latency_ms": 15.4,
+  "snmp_results": {
+    ".1.3.6.1.2.1.1.1.0": "Hardware: x86 Family 6 Model 142 Stepping 12 AT/AT COMPATIBLE - Software: Windows Version 10.0"
+  }
+}
+```
+
 ### Basic Device Check
 ```bash
 curl -X POST http://localhost:8080/check \
@@ -91,7 +142,8 @@ curl -X POST http://localhost:8080/check \
   -d '{
     "target": "192.168.1.1",
     "checks": ["ping", "snmp"],
-    "community": "public"
+    "community": "public",
+    "snmp_version": "v2c"  # Optional, defaults to v2c
   }'
 ```
 
@@ -103,6 +155,7 @@ curl -X POST http://localhost:8080/check \
     "target": "192.168.1.1",
     "checks": ["ping", "snmp"],
     "community": "public",
+    "snmp_version": "v1",  # Force SNMPv1
     "snmp_oids": [
       ".1.3.6.1.2.1.1.1.0",
       ".1.3.6.1.2.1.1.5.0"
@@ -110,19 +163,249 @@ curl -X POST http://localhost:8080/check \
   }'
 ```
 
-### Status Check
-```bash
-curl http://localhost:8080/status
+### Fast SNMP Examples
+
+1. **Default (v2c) SNMP Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public"
+     }'
+   ```
+
+2. **Force SNMPv1 Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v1"
+     }'
+   ```
+
+3. **Optimized SNMPv2c Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v2c",
+       "snmp_oids": [".1.3.6.1.2.1.1.5.0"]
+     }'
+   ```
+
+### SNMP Version Selection Tips
+
+1. **Version Selection Strategy**
+   - Use v2c by default (faster and more efficient)
+   - Only specify v1 if device doesn't support v2c
+   - Let the system auto-detect by omitting version
+
+2. **Performance Considerations**
+   ```bash
+   # Fastest: Explicit v2c with single OID
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v2c",
+       "snmp_oids": [".1.3.6.1.2.1.1.5.0"]
+     }'
+   
+   # Slower: Auto-detect version
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public"
+     }'
+   
+   # Slowest: Force v1
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v1"
+     }'
+   ```
+
+### Request Examples by Speed
+
+From fastest to slowest:
+
+1. **Quickest Check (Ping Only)**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping"]
+     }'
+   ```
+
+2. **Fast SNMPv2c (Single OID)**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v2c",
+       "snmp_oids": [".1.3.6.1.2.1.1.5.0"]
+     }'
+   ```
+
+3. **Standard Check (Ping + SNMPv2c)**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping", "snmp"],
+       "community": "public",
+       "snmp_version": "v2c"
+     }'
+   ```
+
+4. **SNMPv1 Check**
+   ```bash
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_version": "v1"
+     }'
+   ```
+
+5. **Full Status Check**
+   ```bash
+   curl "http://localhost:8080/status"
+   ```
+
+### Example Response
+
+A successful check will return a response like this:
+
+```json
+{
+  "snmp": {
+    ".1.3.6.1.2.1.1.1.0": "Device description here"
+  },
+  "snmp_source": "proxy_hostname",
+  "snmp_version": "v1",
+  "results": [
+    {
+      "proxy_addr": "192.168.1.10",
+      "proxy_hostname": "proxy1",
+      "snmp_success": true,
+      "snmp_results": {
+        ".1.3.6.1.2.1.1.1.0": "Device description here"
+      },
+      "snmp_version": "v1",
+      "score": 0.9
+    }
+  ],
+  "best_proxy": "proxy1",
+  "best_score": 0.9
+}
+```
+
+### Speed Up SNMP Checks
+
+1. **Use SNMPv2c When Possible**
+   - SNMPv2c is more efficient than v1
+   - Only fall back to v1 when necessary
+
+2. **Minimize OIDs**
+   - Request only needed OIDs
+   - Use single OID for status checks
+
+3. **Optimize Community Strings**
+   - Use default community when possible
+   - Keep community strings short
+
+4. **Version Selection**
+   - Explicitly set version to avoid auto-detection
+   - Use v2c by default
+   - Only use v1 when required
+
+### Postman Examples
+
+1. **Basic SNMP Check with Postman**
+```json
+POST http://localhost:8080/check
+Content-Type: application/json
+
+{
+    "target": "10.139.42.10",
+    "checks": ["ping", "snmp"],
+    "community": "public",
+    "snmp_oids": [
+        ".1.2.840.10036.3.1.2.1.2.10",
+        ".1.2.840.10036.3.1.2.1.3.10",
+        ".1.3.6.1.4.1.41112.1.4.1.1.9.1"
+    ],
+    "snmp_version": "v1"
+}
+```
+
+2. **Default SNMPv2c Check with Postman**
+```json
+POST http://localhost:8080/check
+Content-Type: application/json
+
+{
+    "target": "192.168.1.1",
+    "checks": ["ping", "snmp"],
+    "community": "public",
+    "snmp_oids": [
+        ".1.3.6.1.2.1.1.1.0",  // sysDescr
+        ".1.3.6.1.2.1.1.5.0"   // sysName
+    ]
+}
+```
+
+3. **System Status Check with Postman**
+```json
+GET http://localhost:8080/status
+```
+
+4. **Simple Check with Postman**
+```json
+POST http://localhost:8080/check
+Content-Type: application/json
+
+{
+    "target": "10.139.42.10",
+    "checks": ["snmp"],
+    "community": "public",
+    "snmp_version": "v1"
+}
 ```
 
 ## 🔄 Architecture
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant Server
-    participant Proxy
-    participant Device
+    partipublicant Client
+    partipublicant Server
+    partipublicant Proxy
+    partipublicant Device
     
     Client->>Server: Request device check
     Server->>Server: Calculate best proxy
@@ -150,35 +433,46 @@ pie
 
 1. **Fastest Single Device Check**
    ```bash
-   # Quickest way to check a device
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping"]
+     }'
    ```
 
 2. **Fast SNMP Check**
    ```bash
-   # Only get system name - fastest SNMP check
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=snmp&oids=.1.3.6.1.2.1.1.5.0"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_oids": [".1.3.6.1.2.1.1.5.0"]
+     }'
    ```
 
 3. **Fast Ping Check**
    ```bash
-   # Just ping check - fastest response
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping"]
+     }'
    ```
 
 ### Request Speed Tips
 
-1. **Use GET Instead of POST**
+1. **Use JSON POST Format**
    ```bash
-   # Faster than POST
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping,snmp"
-   
-   # Slower POST version
    curl -X POST http://localhost:8080/check \
      -H "Content-Type: application/json" \
      -d '{
-       "target": "192.168.1.1",
-       "checks": ["ping", "snmp"]
+       "target": "10.139.42.10",
+       "checks": ["ping", "snmp"],
+       "community": "public"
      }'
    ```
 
@@ -190,29 +484,20 @@ pie
 3. **Choose Endpoints Wisely**
    ```bash
    # Fastest to slowest endpoints:
-   /simplecheck          # Fastest - direct check
    /check               # Full check with proxy selection
    /status             # Complete system status
    ```
 
-4. **Use URL Parameters**
+4. **Batch Requests When Possible**
    ```bash
-   # Good - fast URL parameters
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&community=public"
-   
-   # Avoid - slower JSON body
+   # Multiple targets in one request
    curl -X POST http://localhost:8080/check \
      -H "Content-Type: application/json" \
      -d '{
-       "target": "192.168.1.1",
+       "targets": ["10.139.42.10", "10.139.42.11", "10.139.42.12"],
+       "checks": ["ping", "snmp"],
        "community": "public"
      }'
-   ```
-
-5. **Batch Requests When Possible**
-   ```bash
-   # Instead of multiple single requests, use comma-separated targets
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1,192.168.1.2,192.168.1.3"
    ```
 
 ### Request Examples by Speed
@@ -221,27 +506,41 @@ From fastest to slowest:
 
 1. **Quickest Check (Ping Only)**
    ```bash
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping"]
+     }'
    ```
 
 2. **Fast SNMP (Single OID)**
    ```bash
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=snmp&oids=.1.3.6.1.2.1.1.5.0"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["snmp"],
+       "community": "public",
+       "snmp_oids": [".1.3.6.1.2.1.1.5.0"]
+     }'
    ```
 
 3. **Standard Check (Ping + SNMP)**
    ```bash
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1"
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "10.139.42.10",
+       "checks": ["ping", "snmp"],
+       "community": "public"
+     }'
    ```
 
 4. **Full Status Check**
    ```bash
    curl "http://localhost:8080/status"
    ```
-
-### Speed Up Checks
-
-// ... rest of existing performance optimization content ...
 
 ## 🔧 Troubleshooting
 
@@ -299,7 +598,6 @@ graph LR
 | `/check` | POST | Perform device checks |
 | `/status` | GET | Get system status |
 | `/version` | GET | Get version info |
-| `/simplecheck` | GET | Simple device check |
 
 ## 🗺️ Roadmap
 
