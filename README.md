@@ -35,6 +35,7 @@ graph TD
 - 🚀 Coming soon:
   - SSH (port availability)
   - Traceroute (path analysis)
+  - Deployable with Ansible
 - 🚦 Real-time status monitoring
 - 📈 Performance scoring system
 - 🔄 Automatic failover
