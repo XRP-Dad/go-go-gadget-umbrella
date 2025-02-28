@@ -553,17 +553,20 @@ pie
 
 5. **Batch Requests When Possible**
    ```bash
-   # Multiple targets in one request:
+   # Note: Batch processing with multiple targets is not currently implemented.
+   # Instead, use individual requests for each target:
+   
+   # For the check endpoint:
    curl -X POST http://localhost:8080/check \
      -H "Content-Type: application/json" \
      -d '{
-       "targets": ["192.168.1.1", "192.168.1.2", "192.168.1.3"],
+       "target": "192.168.1.1",
        "checks": ["ping", "snmp"],
        "community": "public"
      }'
    
-   # Or with simplecheck:
-   curl "http://localhost:8080/simplecheck?target=192.168.1.1,192.168.1.2,192.168.1.3&checks=ping,snmp&community=public"
+   # For the simplecheck endpoint:
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping,snmp&community=public"
    ```
 
 ### Request Examples by Speed
