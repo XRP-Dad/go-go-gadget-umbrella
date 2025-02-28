@@ -144,6 +144,105 @@ pie
     "SNMP" : 40
 ```
 
+## 🚀 Performance Optimization
+
+### Fast Request Examples
+
+1. **Fastest Single Device Check**
+   ```bash
+   # Quickest way to check a device
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1"
+   ```
+
+2. **Fast SNMP Check**
+   ```bash
+   # Only get system name - fastest SNMP check
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=snmp&oids=.1.3.6.1.2.1.1.5.0"
+   ```
+
+3. **Fast Ping Check**
+   ```bash
+   # Just ping check - fastest response
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping"
+   ```
+
+### Request Speed Tips
+
+1. **Use GET Instead of POST**
+   ```bash
+   # Faster than POST
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping,snmp"
+   
+   # Slower POST version
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "192.168.1.1",
+       "checks": ["ping", "snmp"]
+     }'
+   ```
+
+2. **Minimize Parameters**
+   - Only include necessary parameters
+   - Use default community string when possible
+   - Skip optional parameters
+
+3. **Choose Endpoints Wisely**
+   ```bash
+   # Fastest to slowest endpoints:
+   /simplecheck          # Fastest - direct check
+   /check               # Full check with proxy selection
+   /status             # Complete system status
+   ```
+
+4. **Use URL Parameters**
+   ```bash
+   # Good - fast URL parameters
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&community=public"
+   
+   # Avoid - slower JSON body
+   curl -X POST http://localhost:8080/check \
+     -H "Content-Type: application/json" \
+     -d '{
+       "target": "192.168.1.1",
+       "community": "public"
+     }'
+   ```
+
+5. **Batch Requests When Possible**
+   ```bash
+   # Instead of multiple single requests, use comma-separated targets
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1,192.168.1.2,192.168.1.3"
+   ```
+
+### Request Examples by Speed
+
+From fastest to slowest:
+
+1. **Quickest Check (Ping Only)**
+   ```bash
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=ping"
+   ```
+
+2. **Fast SNMP (Single OID)**
+   ```bash
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=snmp&oids=.1.3.6.1.2.1.1.5.0"
+   ```
+
+3. **Standard Check (Ping + SNMP)**
+   ```bash
+   curl "http://localhost:8080/simplecheck?target=192.168.1.1"
+   ```
+
+4. **Full Status Check**
+   ```bash
+   curl "http://localhost:8080/status"
+   ```
+
+### Speed Up Checks
+
+// ... rest of existing performance optimization content ...
+
 ## 🔧 Troubleshooting
 
 ### Common Issues

@@ -619,26 +619,27 @@ func calculateDynamicWeights(checks []string, originalPingWeight, originalSNMPWe
 // Proxy Score Calculation
 
 func calculateProxyScore(result ProxyResult, checks []string,
-	pingWeight float64,
-	snmpWeight float64,
-	sshWeight float64,
-	tracerouteWeight float64, // kept for backward compatibility but not used
+	pingWeight float64, // Adjusted to 0.3
+	snmpWeight float64, // Adjusted to 0.4
+	sshWeight float64, // Adjusted to 0.2
+	tracerouteWeight float64, // Adjusted to 0.1
 	maxPingMs float64,
-	tracerouteFailurePenalty float64) float64 { // kept for backward compatibility but not used
+	tracerouteFailurePenalty float64) float64 {
 
 	var totalWeight, score float64
 	checksMap := make(map[string]bool)
 	for _, check := range checks {
-		if check != "traceroute" { // Skip traceroute checks
-			checksMap[check] = true
-		}
+		checksMap[check] = true
 	}
 
 	// Only include weights for requested checks
 	if checksMap["ping"] {
 		if result.Ping != nil && result.Ping.Success {
+			// Make ping scoring more gradual using log scale
+			// This will make small differences in latency less dramatic
 			latencyScore := 1.0
 			if result.Ping.LatencyMs > 0 {
+				// Normalize latency between 0 and 1, with less dramatic differences
 				latencyScore = 1.0 - (math.Log1p(result.Ping.LatencyMs) / math.Log1p(maxPingMs))
 				if latencyScore < 0 {
 					latencyScore = 0
@@ -663,7 +664,16 @@ func calculateProxyScore(result ProxyResult, checks []string,
 		}
 	}
 
-	// Removed traceroute scoring
+	if checksMap["traceroute"] {
+		if result.Traceroute != nil {
+			if result.Traceroute.Success {
+				score += tracerouteWeight
+			} else {
+				score -= tracerouteFailurePenalty
+			}
+			totalWeight += tracerouteWeight
+		}
+	}
 
 	// If no checks were performed or all failed, return 0
 	if totalWeight == 0 {
@@ -784,14 +794,7 @@ func handleProxyCheck(w http.ResponseWriter, r *http.Request, constants *Constan
 		}
 	}
 
-	// Calculate score without traceroute
-	result.Score = calculateProxyScore(result, checks,
-		constants.OriginalPingWeight,
-		constants.OriginalSNMPWeight,
-		constants.OriginalSSHWeight,
-		constants.OriginalTracerouteWeight, // kept for backward compatibility
-		constants.MaxPingMs,
-		constants.TracerouteFailurePenalty) // kept for backward compatibility
+	result.Score = calculateProxyScore(result, checks, constants.OriginalPingWeight, constants.OriginalSNMPWeight, constants.OriginalSSHWeight, constants.OriginalTracerouteWeight, constants.MaxPingMs, constants.TracerouteFailurePenalty)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
@@ -1279,15 +1282,6 @@ func (p *Proxy) handleCheck(w http.ResponseWriter, r *http.Request) {
 		checks = []string{"ping", "snmp"} // Default checks if none specified
 	}
 
-	// Filter out traceroute from checks
-	filteredChecks := make([]string, 0)
-	for _, check := range checks {
-		if check != "traceroute" {
-			filteredChecks = append(filteredChecks, check)
-		}
-	}
-	checks = filteredChecks
-
 	if community == "" {
 		community = p.Constants.DefaultCommunity
 	}
@@ -1315,25 +1309,21 @@ func (p *Proxy) handleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add SSH check
-	if contains(checks, "ssh") {
-		sshRes, err := checkSSH(target)
+	if contains(checks, "traceroute") {
+		tracerouteRes, err := checkTracerouteProxy(target, tracerouteHops, p.Constants.TracerouteTimeout)
 		if err == nil {
-			result.SSH = sshRes
-			log.Printf("Go Go Gadget SSH! Port check completed for %s: %s", target, sshRes)
-		} else {
-			log.Printf("Dr. Claw's SSH trap! Error checking SSH for %s: %v", target, err)
+			result.Traceroute = tracerouteRes
 		}
 	}
 
-	// Calculate score without traceroute
+	// Calculate score
 	result.Score = calculateProxyScore(result, checks,
 		p.Constants.OriginalPingWeight,
 		p.Constants.OriginalSNMPWeight,
 		p.Constants.OriginalSSHWeight,
-		p.Constants.OriginalTracerouteWeight, // kept for backward compatibility
+		p.Constants.OriginalTracerouteWeight,
 		p.Constants.MaxPingMs,
-		p.Constants.TracerouteFailurePenalty) // kept for backward compatibility
+		p.Constants.TracerouteFailurePenalty)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
