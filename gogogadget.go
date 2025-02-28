@@ -1440,11 +1440,12 @@ func calculateBestProxy(results []ProxyResult) (string, float64) {
 }
 
 type SimpleCheckResponse struct {
-	BestProxy   string            `json:"best_proxy"`
-	PingLatency float64           `json:"ping_latency_ms,omitempty"`
-	SNMPResults map[string]string `json:"snmp_results,omitempty"`
-	SSH         string            `json:"ssh,omitempty"`
-	Traceroute  *TracerouteResult `json:"traceroute,omitempty"`
+	BestProxy     string            `json:"best_proxy"`
+	PingReachable bool              `json:"ping_reachable"`
+	PingLatency   float64           `json:"ping_latency_ms,omitempty"`
+	SNMPResults   map[string]string `json:"snmp_results,omitempty"`
+	SSH           string            `json:"ssh,omitempty"`
+	Traceroute    *TracerouteResult `json:"traceroute,omitempty"`
 }
 
 // Add this to the Server struct methods
@@ -1514,27 +1515,42 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Initialize response with default values
 	response := SimpleCheckResponse{
-		BestProxy: currentHostname, // Default to current hostname
+		BestProxy:     currentHostname, // Default to current hostname
+		PingReachable: false,           // Default to unreachable
 	}
 
-	// Check if we can handle the request locally first
+	// Try local checks first
+	var localPingSuccess bool
+	if contains(req.Checks, "ping") {
+		pingRes, err := checkPing(req.Target)
+		if err == nil && pingRes != nil && pingRes.Success {
+			response.PingReachable = true
+			response.PingLatency = pingRes.LatencyMs
+			localPingSuccess = true
+			log.Printf("Local ping check successful for %s: %.2fms", req.Target, pingRes.LatencyMs)
+		}
+	}
+
+	// Check if we can handle the SNMP request locally
 	if contains(req.Checks, "snmp") {
 		snmpResults, version, err := checkSNMPWithRequestedVersion(req.Target, req.SNMPOIDs, req.Community, req.SNMPVersion)
 		if err == nil {
 			response.SNMPResults = snmpResults
 			log.Printf("Local SNMP check successful for %s using version %s", req.Target, version)
 
-			// If we got successful SNMP results locally, we can just return these
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(response); err != nil {
-				log.Printf("Failed to encode simple check response: %v", err)
-				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			// If we got successful local results for both ping and SNMP, we can return
+			if localPingSuccess {
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+					log.Printf("Failed to encode simple check response: %v", err)
+					http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+				}
+				return
 			}
-			return
 		}
 	}
 
-	// If we couldn't handle it locally or need other checks, try the proxies
+	// If we couldn't handle everything locally, try the proxies
 	resultsChan := make(chan ProxyResult, len(s.Proxies))
 	var wg sync.WaitGroup
 
@@ -1564,6 +1580,7 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 	var bestScore float64
 	var bestResult ProxyResult
 	var resultsReceived bool
+	var anyPingSuccess bool = localPingSuccess // Start with local ping result
 
 	for result := range resultsChan {
 		resultsReceived = true
@@ -1571,6 +1588,16 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 		// Skip results with errors
 		if result.Error != "" {
 			continue
+		}
+
+		// Track if ANY proxy had a successful ping
+		if result.Ping != nil && result.Ping.Success {
+			anyPingSuccess = true
+
+			// If we don't have latency set yet or this one is better, use it
+			if !response.PingReachable || (response.PingLatency > result.Ping.LatencyMs) {
+				response.PingLatency = result.Ping.LatencyMs
+			}
 		}
 
 		// Apply server penalty if needed
@@ -1585,13 +1612,16 @@ func (s *Server) handleSimpleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If we got valid results, update the response
+	// Set ping reachable if ANY proxy had success
+	if anyPingSuccess {
+		response.PingReachable = true
+	}
+
+	// If we got valid results, update the response with best proxy info
 	if resultsReceived && bestProxy != "" {
 		response.BestProxy = bestProxy
 
-		if bestResult.Ping != nil && bestResult.Ping.Success {
-			response.PingLatency = bestResult.Ping.LatencyMs
-		}
+		// We already handled ping status above
 
 		if bestResult.SNMPSuccess && bestResult.SNMPResults != nil {
 			response.SNMPResults = bestResult.SNMPResults

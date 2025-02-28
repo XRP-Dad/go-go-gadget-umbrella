@@ -84,9 +84,16 @@ Example `constants.json`:
 
 ## 📡 Usage Examples
 
-### Simple Checks with the `/simplecheck` Endpoint (Now Working!)
+### Simple Checks with the `/simplecheck` Endpoint (Now Fixed and Improved!)
 
-The `/simplecheck` endpoint is now fixed and working properly. It provides a convenient way to perform quick device checks with simple URL parameters:
+The `/simplecheck` endpoint has been significantly improved and now correctly reports ping reachability status. Key improvements include:
+
+- ✅ Properly reports ping reachability when any proxy has a successful ping
+- ✅ Reports the lowest ping latency from all successful pings
+- ✅ Performs local ping checks first before trying remote proxies
+- ✅ More accurate best proxy selection based on enhanced scoring
+
+You can use this endpoint with simple URL parameters:
 
 1. **Basic Simple Check**
    ```bash
@@ -111,6 +118,27 @@ The `/simplecheck` endpoint is now fixed and working properly. It provides a con
    # Using curl with specific OIDs:
    curl "http://localhost:8080/simplecheck?target=192.168.1.1&checks=snmp&community=public&oids=.1.3.6.1.2.1.1.5.0,.1.3.6.1.2.1.1.1.0"
    ```
+
+### Simple Check Response
+
+A successful simple check will return a response like this:
+
+```json
+{
+  "best_proxy": "proxy1",
+  "ping_reachable": true,
+  "ping_latency_ms": 5.90414,
+  "snmp_results": {
+    ".1.3.6.1.2.1.1.1.0": "Device description here"
+  }
+}
+```
+
+The response will always include:
+- `best_proxy`: The proxy that provided the best overall results
+- `ping_reachable`: Now correctly shows `true` when any proxy had a successful ping
+- `ping_latency_ms`: Reports the best (lowest) latency from all successful pings
+- `snmp_results`: When SNMP check was requested and successful
 
 ### Simple Checks (JSON POST Method)
 
@@ -148,20 +176,6 @@ You can also use the `/check` endpoint with JSON POST for more detailed checks:
        "checks": ["ping"]
      }'
    ```
-
-### Simple Check Response
-
-A successful simple check will always include the `best_proxy` field, which indicates which proxy performed the check:
-
-```json
-{
-  "best_proxy": "proxy1",
-  "ping_latency_ms": 15.4,
-  "snmp_results": {
-    ".1.3.6.1.2.1.1.1.0": "Hardware: x86 Family 6 Model 142 Stepping 12 AT/AT COMPATIBLE - Software: Windows Version 10.0"
-  }
-}
-```
 
 ### Basic Device Check
 ```bash
