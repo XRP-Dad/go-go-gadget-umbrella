@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -69,6 +70,7 @@ type CheckRequest struct {
 	Community      string   `json:"community,omitempty"`
 	SNMPOIDs       []string `json:"snmp_oids,omitempty"`
 	TracerouteHops int      `json:"traceroute_hops,omitempty"`
+	SNMPVersion    string   `json:"snmp_version,omitempty"`
 }
 
 type ProxyResult struct {
@@ -299,10 +301,15 @@ func (s *Server) checkProxyAsync(proxy ProxyConfig, req CheckRequest, results ch
 			if community == "" {
 				community = s.Constants.DefaultCommunity
 			}
-			snmpRes, err := checkSNMP(req.Target, req.SNMPOIDs, community)
+			snmpRes, version, err := checkSNMP(req.Target, req.SNMPOIDs, community)
 			if err == nil {
 				result.SNMPSuccess = true
 				result.SNMPResults = snmpRes
+				result.SNMPVersion = version
+				log.Printf("Go Go Gadget SNMP Success! Got results using version %s for %d OIDs from %s", version, len(snmpRes), req.Target)
+			} else {
+				log.Printf("Dr. Claw's SNMP trap! Error checking SNMP for %s: %v", req.Target, err)
+				result.Error = fmt.Sprintf("SNMP check failed: %v", err)
 			}
 		}
 
@@ -435,6 +442,11 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		req.Checks = []string{"ping"}
 	}
 
+	// Set default SNMP version if not specified
+	if req.SNMPVersion == "" {
+		req.SNMPVersion = "v2c" // Default to v2c
+	}
+
 	// Only use default OIDs if none specified in request
 	var oids []string
 	if len(req.SNMPOIDs) > 0 {
@@ -505,6 +517,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	resultsChan := make(chan ProxyResult, len(validProxies))
 	var snmpData map[string]string
 	var snmpSource string
+	var snmpVersion string
 	var bestProxy string
 	var bestScore float64
 
@@ -534,16 +547,14 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if result.SNMPSuccess && snmpData == nil {
-			community := req.Community
-			if community == "" {
-				community = s.Constants.DefaultCommunity
-			}
-			snmpRes, err := checkSNMP(req.Target, oids, community)
+			snmpRes, version, err := checkSNMPWithRequestedVersion(req.Target, oids, req.Community, req.SNMPVersion)
 			if err == nil {
 				snmpData = snmpRes
 				snmpSource = result.ProxyHostname
+				snmpVersion = version
 				result.SNMPResults = snmpRes
-				log.Printf("Go Go Gadget SNMP! OIDs %v checked via %s for target %s", oids, result.ProxyHostname, req.Target)
+				result.SNMPVersion = version
+				log.Printf("Go Go Gadget SNMP Success! Got results using version %s for %d OIDs from %s", version, len(snmpRes), req.Target)
 			}
 		}
 
@@ -556,11 +567,12 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ServerResponse{
-		SNMP:       snmpData,
-		SNMPSource: snmpSource,
-		Results:    results,
-		BestProxy:  bestProxy,
-		BestScore:  bestScore,
+		SNMP:        snmpData,
+		SNMPSource:  snmpSource,
+		SNMPVersion: snmpVersion,
+		Results:     results,
+		BestProxy:   bestProxy,
+		BestScore:   bestScore,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -700,106 +712,94 @@ func handleProxyCheck(w http.ResponseWriter, r *http.Request, constants *Constan
 	checksStr := r.URL.Query().Get("checks")
 	oidsStr := r.URL.Query().Get("oids")
 	community := r.URL.Query().Get("community")
-	tracerouteHopsStr := r.URL.Query().Get("traceroute_hops")
+	snmpVersion := r.URL.Query().Get("snmp_version")
 
 	if target == "" {
-		log.Printf("Penny's gadget glitch! Missing target in proxy request")
 		http.Error(w, "Missing target", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Go Go Gadget OID Inspection! Received oidsStr: %q", oidsStr)
-
 	checks := strings.Split(checksStr, ",")
-	var tracerouteHops int
-	if tracerouteHopsStr != "" {
-		if _, err := fmt.Sscanf(tracerouteHopsStr, "%d", &tracerouteHops); err != nil {
-			tracerouteHops = constants.MaxTracerouteHops
-		}
-	} else {
-		tracerouteHops = constants.MaxTracerouteHops
+	if len(checks) == 1 && checks[0] == "" {
+		checks = []string{"ping"}
 	}
 
+	// Process OIDs
 	oidParts := strings.Split(oidsStr, ",")
 	var oids []string
 	for _, oid := range oidParts {
 		trimmed := strings.TrimSpace(oid)
 		if trimmed != "" && isValidOID(trimmed) {
 			oids = append(oids, trimmed)
-		} else if trimmed != "" {
-			log.Printf("Brain's sneaky check filtered out invalid OID: %q", trimmed)
 		}
 	}
 	if len(oids) == 0 {
-		oids = defaultOIDs // Use hardcoded default OIDs if none specified
+		oids = defaultOIDs
 	}
-	log.Printf("Go Go Gadget OID Processing! OIDs after splitting and trimming: %v", oids)
 
 	if community == "" {
 		community = constants.DefaultCommunity
 	}
 
 	result := ProxyResult{SNMPSuccess: false}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 
+	// Run checks in parallel
 	for _, check := range checks {
-		switch strings.ToLower(check) {
-		case "ping":
-			pingRes, err := checkPing(target)
-			if err != nil {
-				log.Printf("Brain's sneaky ping failed for target %s: %v (Privileges: CAP_NET_RAW required)", target, err)
-				result.Ping = &PingResult{LatencyMs: -1, Success: false}
-				result.Error = "Ping failed: unable to reach target"
-				continue
-			}
-			result.Ping = pingRes
-			log.Printf("Go Go Gadget Ping! Target %s latency: %.2fms", target, pingRes.LatencyMs)
-		case "snmp":
-			snmpRes, err := checkSNMP(target, []string{snmpStatusOID}, community)
-			if err != nil {
-				log.Printf("Dr. Claw's trap! SNMP status check failed for target %s, community %s: %v", target, community, err)
-				result.Error = simplifySNMPError(fmt.Sprintf("SNMP failed: %v", err))
-				result.SNMPSuccess = false
-				continue
-			}
-			result.SNMP = snmpRes
-			result.SNMPSuccess = true
-			log.Printf("Go Go Gadget SNMP! Status OID checked for target %s with community %s", target, community)
-		case "ssh":
-			sshRes, err := checkSSH(target)
-			if err != nil {
-				log.Printf("Penny's SSH gadget malfunction for target %s: %v", target, err)
-				result.Error = fmt.Sprintf("SSH check failed: %v", err)
-				continue
-			}
-			result.SSH = sshRes
-			log.Printf("Go Go Gadget SSH! Target %s port 22 is %s", target, sshRes)
-		case "traceroute":
-			tracerouteRes, err := checkTracerouteProxy(target, tracerouteHops, constants.TracerouteTimeout)
-			if err != nil {
-				if strings.Contains(err.Error(), "timeout") {
-					log.Printf("Dr. Claw's trap! Traceroute timed out for target %s: %v", target, err)
-					result.Error = "Traceroute took too long"
-				} else {
-					log.Printf("Dr. Claw's trap! Traceroute failed for target %s: %v", target, err)
-					result.Error = fmt.Sprintf("Traceroute failed: %v", err)
+		wg.Add(1)
+		go func(check string) {
+			defer wg.Done()
+			switch strings.ToLower(check) {
+			case "ping":
+				if pingRes, err := checkPing(target); err == nil {
+					mu.Lock()
+					result.Ping = pingRes
+					mu.Unlock()
 				}
-				continue
+			case "snmp":
+				if snmpRes, version, err := checkSNMPWithRequestedVersion(target, oids, community, snmpVersion); err == nil {
+					mu.Lock()
+					result.SNMP = snmpRes
+					result.SNMPSuccess = true
+					result.SNMPResults = snmpRes
+					result.SNMPVersion = version
+					mu.Unlock()
+				}
+			case "ssh":
+				if sshRes, err := checkSSH(target); err == nil {
+					mu.Lock()
+					result.SSH = sshRes
+					mu.Unlock()
+				}
 			}
-			result.Traceroute = tracerouteRes
-			log.Printf("Go Go Gadget Traceroute! Traced path to %s with %d hops from proxy", target, tracerouteRes.TotalHops)
-		default:
-			log.Printf("Inspector Gadget puzzled! Unknown check: %s", check)
-			result.Error = fmt.Sprintf("Unknown check: %s", check)
-			continue
-		}
+		}(check)
 	}
 
-	result.Score = calculateProxyScore(result, checks, constants.OriginalPingWeight, constants.OriginalSNMPWeight, constants.OriginalSSHWeight, constants.OriginalTracerouteWeight, constants.MaxPingMs, constants.TracerouteFailurePenalty)
+	// Wait with timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All checks completed
+	case <-time.After(5 * time.Second):
+		// Timeout occurred
+	}
+
+	result.Score = calculateProxyScore(result, checks,
+		constants.OriginalPingWeight,
+		constants.OriginalSNMPWeight,
+		constants.OriginalSSHWeight,
+		constants.OriginalTracerouteWeight,
+		constants.MaxPingMs,
+		constants.TracerouteFailurePenalty)
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("Dr. Claw's final sabotage! Failed to encode proxy response: %v", err)
-	}
+	json.NewEncoder(w).Encode(result)
 }
 
 // Utility Functions
@@ -870,20 +870,21 @@ func checkPing(target string) (*PingResult, error) {
 	return &PingResult{LatencyMs: float64(stats.AvgRtt) / float64(time.Millisecond), Success: true}, nil
 }
 
-func checkSNMP(target string, oids []string, community string) (map[string]string, error) {
-	// Try SNMP v2c first
+func checkSNMP(target string, oids []string, community string) (map[string]string, string, error) {
+	// If no version specified, try v2c first then v1
 	snmpV2Results, err := checkSNMPWithVersion(target, oids, community, g.Version2c)
 	if err == nil {
-		return snmpV2Results, nil
+		return snmpV2Results, "v2c", nil
 	}
 
-	// If v2c fails, try SNMP v1
+	// If v2c fails, try v1
 	snmpV1Results, err := checkSNMPWithVersion(target, oids, community, g.Version1)
-	if err != nil {
-		return nil, fmt.Errorf("both SNMP v2c and v1 failed: %v", err)
+	if err == nil {
+		return snmpV1Results, "v1", nil
 	}
 
-	return snmpV1Results, nil
+	// If both fail, return detailed error
+	return nil, "", fmt.Errorf("SNMP checks failed - v2c: %v, v1: %v", err, err)
 }
 
 func checkSNMPWithVersion(target string, oids []string, community string, version g.SnmpVersion) (map[string]string, error) {
@@ -894,19 +895,19 @@ func checkSNMPWithVersion(target string, oids []string, community string, versio
 		Port:      161,
 		Community: community,
 		Version:   version,
-		Timeout:   time.Duration(2) * time.Second,
-		Retries:   1,
+		Timeout:   time.Duration(1) * time.Second, // Reduced from 2 to 1 second
+		Retries:   0,                              // No retries, just fail fast
 	}
 
 	err := gosnmp.Connect()
 	if err != nil {
-		return nil, fmt.Errorf("connection failed: %v", err)
+		return nil, fmt.Errorf("connection failed (version %v): %v", version, err)
 	}
 	defer gosnmp.Conn.Close()
 
 	pdus, err := gosnmp.Get(oids)
 	if err != nil {
-		return nil, fmt.Errorf("SNMP get failed: %v", err)
+		return nil, fmt.Errorf("SNMP get failed (version %v): %v", version, err)
 	}
 
 	for _, pdu := range pdus.Variables {
@@ -1237,97 +1238,94 @@ type Proxy struct {
 
 // Add handler methods for Proxy
 func (p *Proxy) handleCheck(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("target")
-	checksStr := r.URL.Query().Get("checks")
-	oidsStr := r.URL.Query().Get("oids")
-	community := r.URL.Query().Get("community")
-	tracerouteHopsStr := r.URL.Query().Get("traceroute_hops")
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
-	if target == "" {
-		log.Printf("Penny's gadget glitch! Missing target in proxy request")
-		http.Error(w, "Missing target", http.StatusBadRequest)
-		return
-	}
+	// Create a channel for the result
+	resultChan := make(chan ProxyResult, 1)
 
-	// Parse OIDs properly
-	var oids []string
-	if oidsStr != "" {
-		// Split and clean OIDs
-		for _, oid := range strings.Split(oidsStr, ",") {
-			oid = strings.TrimSpace(oid)
-			if oid != "" && isValidOID(oid) {
-				oids = append(oids, oid)
+	// Run the check in a goroutine
+	go func() {
+		target := r.URL.Query().Get("target")
+		checksStr := r.URL.Query().Get("checks")
+		oidsStr := r.URL.Query().Get("oids")
+		community := r.URL.Query().Get("community")
+		snmpVersion := r.URL.Query().Get("snmp_version")
+
+		if target == "" {
+			log.Printf("Penny's gadget glitch! Missing target in proxy request")
+			resultChan <- ProxyResult{Error: "Missing target"}
+			return
+		}
+
+		// Parse OIDs properly
+		var oids []string
+		if oidsStr != "" {
+			for _, oid := range strings.Split(oidsStr, ",") {
+				oid = strings.TrimSpace(oid)
+				if oid != "" && isValidOID(oid) {
+					oids = append(oids, oid)
+				}
 			}
 		}
-	}
-	if len(oids) == 0 {
-		oids = defaultOIDs
-	}
-	log.Printf("Go Go Gadget SNMP! Checking OIDs: %v", oids)
-
-	// Parse traceroute hops
-	var tracerouteHops int
-	if tracerouteHopsStr != "" {
-		if hops, err := strconv.Atoi(tracerouteHopsStr); err == nil {
-			tracerouteHops = hops
-		} else {
-			tracerouteHops = p.Constants.MaxTracerouteHops
+		if len(oids) == 0 {
+			oids = defaultOIDs
 		}
-	} else {
-		tracerouteHops = p.Constants.MaxTracerouteHops
-	}
 
-	checks := strings.Split(checksStr, ",")
-	if len(checks) == 1 && checks[0] == "" {
-		checks = []string{"ping", "snmp"} // Default checks if none specified
-	}
-
-	if community == "" {
-		community = p.Constants.DefaultCommunity
-	}
-
-	result := ProxyResult{SNMPSuccess: false}
-
-	// Perform checks
-	if contains(checks, "ping") {
-		pingRes, err := checkPing(target)
-		if err == nil {
-			result.Ping = pingRes
+		checks := strings.Split(checksStr, ",")
+		if len(checks) == 1 && checks[0] == "" {
+			checks = []string{"ping", "snmp"}
 		}
-	}
 
-	if contains(checks, "snmp") {
-		snmpRes, err := checkSNMP(target, oids, community)
-		if err == nil {
-			result.SNMP = snmpRes
-			result.SNMPSuccess = true
-			result.SNMPResults = snmpRes
-			log.Printf("Go Go Gadget SNMP Success! Got results for %d OIDs from %s", len(snmpRes), target)
-		} else {
-			log.Printf("Dr. Claw's SNMP trap! Error checking SNMP for %s: %v", target, err)
-			result.Error = fmt.Sprintf("SNMP check failed: %v", err)
+		if community == "" {
+			community = p.Constants.DefaultCommunity
 		}
-	}
 
-	if contains(checks, "traceroute") {
-		tracerouteRes, err := checkTracerouteProxy(target, tracerouteHops, p.Constants.TracerouteTimeout)
-		if err == nil {
-			result.Traceroute = tracerouteRes
+		result := ProxyResult{SNMPSuccess: false}
+
+		// Run checks with shorter timeouts
+		if contains(checks, "ping") {
+			pingRes, err := checkPing(target)
+			if err == nil {
+				result.Ping = pingRes
+			}
 		}
-	}
 
-	// Calculate score
-	result.Score = calculateProxyScore(result, checks,
-		p.Constants.OriginalPingWeight,
-		p.Constants.OriginalSNMPWeight,
-		p.Constants.OriginalSSHWeight,
-		p.Constants.OriginalTracerouteWeight,
-		p.Constants.MaxPingMs,
-		p.Constants.TracerouteFailurePenalty)
+		if contains(checks, "snmp") {
+			snmpRes, version, err := checkSNMPWithRequestedVersion(target, oids, community, snmpVersion)
+			if err == nil {
+				result.SNMP = snmpRes
+				result.SNMPSuccess = true
+				result.SNMPResults = snmpRes
+				result.SNMPVersion = version
+			} else {
+				result.Error = fmt.Sprintf("SNMP check failed: %v", err)
+			}
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("Dr. Claw's JSON trap! Failed to encode response: %v", err)
+		// Calculate score
+		result.Score = calculateProxyScore(result, checks,
+			p.Constants.OriginalPingWeight,
+			p.Constants.OriginalSNMPWeight,
+			p.Constants.OriginalSSHWeight,
+			p.Constants.OriginalTracerouteWeight,
+			p.Constants.MaxPingMs,
+			p.Constants.TracerouteFailurePenalty)
+
+		resultChan <- result
+	}()
+
+	// Wait for either the result or timeout
+	select {
+	case <-ctx.Done():
+		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
+		return
+	case result := <-resultChan:
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			log.Printf("Dr. Claw's JSON trap! Failed to encode response: %v", err)
+		}
 	}
 }
 
@@ -1634,4 +1632,38 @@ func (s *Server) runProxyCheck(proxy ProxyConfig, req CheckRequest, wg *sync.Wai
 	result.ProxyHostname = proxy.Hostname
 
 	resultsChan <- result
+}
+
+// Add new function for checking with specific version
+func checkSNMPWithRequestedVersion(target string, oids []string, community string, requestedVersion string) (map[string]string, string, error) {
+	switch strings.ToLower(requestedVersion) {
+	case "v1":
+		// For v1, just try once with shorter timeout
+		results, err := checkSNMPWithVersion(target, oids, community, g.Version1)
+		if err != nil {
+			return nil, "", fmt.Errorf("SNMP v1 check failed: %v", err)
+		}
+		return results, "v1", nil
+	case "v2c":
+		// For v2c, try once with shorter timeout
+		results, err := checkSNMPWithVersion(target, oids, community, g.Version2c)
+		if err != nil {
+			return nil, "", fmt.Errorf("SNMP v2c check failed: %v", err)
+		}
+		return results, "v2c", nil
+	default:
+		// For automatic version detection, try v2c first with very short timeout
+		v2cResults, err := checkSNMPWithVersion(target, oids, community, g.Version2c)
+		if err == nil {
+			return v2cResults, "v2c", nil
+		}
+
+		// If v2c fails quickly, try v1
+		v1Results, err := checkSNMPWithVersion(target, oids, community, g.Version1)
+		if err == nil {
+			return v1Results, "v1", nil
+		}
+
+		return nil, "", fmt.Errorf("SNMP checks failed - v2c: %v, v1: %v", err, err)
+	}
 }
