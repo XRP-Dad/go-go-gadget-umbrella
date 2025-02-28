@@ -692,8 +692,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Inspired by Inspector Gadget
 - Built with Go
-- Special thanks to all contributors
 
 ---
 
-Made with ❤️ by the GoGoGadget Team 
+Made with ❤️
