@@ -1,0 +1,20 @@
+{
+    "proxies": [
+        {
+            "address": "localhost:8800",
+            "hostname": "proxy1"
+        },
+        {
+            "address": "localhost:8801",
+            "hostname": "proxy2"
+        }
+    ],
+    "communities": [
+        "public",
+        "private"
+    ],
+    "default_oids": [
+        ".1.3.6.1.2.1.1.1.0",
+        ".1.3.6.1.2.1.1.5.0"
+    ]
+}
