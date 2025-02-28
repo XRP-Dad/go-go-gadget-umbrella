@@ -1,11 +1,11 @@
 {
     "proxies": [
         {
-            "address": "localhost:8800",
+            "address": "localhost:8081",
             "hostname": "proxy1"
         },
         {
-            "address": "localhost:8801",
+            "address": "localhost:8081",
             "hostname": "proxy2"
         }
     ],
