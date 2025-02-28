@@ -18,11 +18,11 @@ graph TD
     B --> E[Network Devices]
     C --> E
     D --> E
-    style A fill:#f9f,stroke:#333,stroke-width:4px
-    style B fill:#bbf,stroke:#333,stroke-width:2px
-    style C fill:#bbf,stroke:#333,stroke-width:2px
-    style D fill:#bbf,stroke:#333,stroke-width:2px
-    style E fill:#bfb,stroke:#333,stroke-width:2px
+    style A fill:#4a86e8,stroke:#333,stroke-width:4px
+    style B fill:#ff9900,stroke:#333,stroke-width:2px
+    style C fill:#ff9900,stroke:#333,stroke-width:2px
+    style D fill:#ff9900,stroke:#333,stroke-width:2px
+    style E fill:#6aa84f,stroke:#333,stroke-width:2px
 ```
 
 ## ✨ Features
